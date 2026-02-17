@@ -12,7 +12,8 @@ app = Flask(__name__)
 app.config.from_object(Config)
 app.secret_key = Config.SECRET_KEY
 
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+# DO NOT set async_mode here (eventlet will handle it)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 
 # ---------------- DATABASE CONNECTION ----------------
@@ -47,7 +48,7 @@ def create_tables():
             CREATE TABLE IF NOT EXISTS votes (
                 id SERIAL PRIMARY KEY,
                 poll_id VARCHAR(10),
-                ip_address VARCHAR(50),
+                ip_address VARCHAR(100),
                 UNIQUE (poll_id, ip_address)
             );
         """)
@@ -62,7 +63,7 @@ def create_tables():
         print("Table creation error:", e)
 
 
-# ---------------- AUTO CREATE TABLES (FOR RENDER + LOCAL) ----------------
+# ---------------- AUTO CREATE TABLES ----------------
 create_tables()
 
 
@@ -161,18 +162,23 @@ def vote(poll_id):
     if not option_id:
         return jsonify({"success": False, "message": "Invalid vote."})
 
+    # Session restriction
     if "voted_polls" not in session:
         session["voted_polls"] = []
 
     if poll_id in session["voted_polls"]:
         return jsonify({"success": False, "message": "You already voted."})
 
-    ip_address = request.remote_addr
+    # 🔥 FIXED IP DETECTION FOR RENDER
+    ip_address = request.headers.get("X-Forwarded-For", request.remote_addr)
+    if ip_address and "," in ip_address:
+        ip_address = ip_address.split(",")[0].strip()
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+        # IP restriction
         cursor.execute(
             "SELECT * FROM votes WHERE poll_id = %s AND ip_address = %s",
             (poll_id, ip_address)
@@ -218,3 +224,8 @@ def vote(poll_id):
 @socketio.on("join_poll")
 def handle_join(data):
     join_room(data["poll_id"])
+
+
+# ---------------- RUN LOCALLY ----------------
+if __name__ == "__main__":
+    socketio.run(app, debug=True)
