@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Poll</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="card">
+
+    <!-- Poll Question -->
+    <h2>{{ poll.question }}</h2>
+
+    <!-- Voting Form -->
+    <form id="voteForm">
+
+        {% for option in options %}
+        <div class="option-row">
+            <label style="cursor:pointer;">
+                <input type="radio" name="option" value="{{ option.id }}" required>
+                {{ option.option_text }}
+            </label>
+
+            <span class="vote-count">
+                <span id="votes-{{ option.id }}">{{ option.vote_count }}</span> votes
+            </span>
+        </div>
+        {% endfor %}
+
+        <button type="submit" id="voteButton">
+            Submit Vote
+        </button>
+
+    </form>
+
+    <!-- Share Section BELOW poll -->
+    <div style="margin-top:30px; border-top:1px solid #e5e7eb; padding-top:20px;">
+        <p style="font-size:14px; color:#6b7280; margin-bottom:8px;">
+            Share this poll:
+        </p>
+
+        <div class="link-box" id="shareLink">
+            {{ request.url }}
+        </div>
+
+        <button id="copyBtn" onclick="copyLink()" style="margin-top:10px;">
+            Copy Share Link
+        </button>
+    </div>
+
+</div>
+
+<!-- Scripts -->
+<script>
+    const pollId = "{{ poll.id }}";
+
+    function copyLink() {
+        const text = document.getElementById("shareLink").innerText;
+        const btn = document.getElementById("copyBtn");
+
+        navigator.clipboard.writeText(text).then(() => {
+            btn.innerText = "Copied ✓";
+            btn.style.backgroundColor = "#16a34a";
+
+            // Blink effect
+            btn.style.opacity = "0.4";
+            setTimeout(() => {
+                btn.style.opacity = "1";
+            }, 150);
+
+            setTimeout(() => {
+                btn.innerText = "Copy Share Link";
+                btn.style.backgroundColor = "#2563eb";
+            }, 1500);
+        });
+    }
+</script>
+
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+
+</body>
+</html>

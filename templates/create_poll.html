@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Poll</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="card">
+    <h1>Create a Poll</h1>
+
+    <form method="POST" action="/create">
+        <input type="text" name="question" placeholder="Enter your poll question..." required>
+
+        <input type="text" name="option1" placeholder="Option 1" required>
+        <input type="text" name="option2" placeholder="Option 2" required>
+        <input type="text" name="option3" placeholder="Option 3 (optional)">
+        <input type="text" name="option4" placeholder="Option 4 (optional)">
+
+        <button type="submit">Create Poll</button>
+    </form>
+</div>
+
+</body>
+</html>

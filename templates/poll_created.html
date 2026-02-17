@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Poll Created</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="card">
+    <h1>🎉 Poll Created Successfully</h1>
+
+    <p>Your poll is now live. Share the link below to start collecting votes.</p>
+
+    <div class="link-box" id="shareLink">
+        {{ share_url }}
+    </div>
+
+    <button onclick="copyLink()">Copy Link</button>
+
+    <br><br>
+
+    <a href="{{ share_url }}">
+        <button style="background:#16a34a;">Go to Poll</button>
+    </a>
+</div>
+
+<script>
+function copyLink() {
+    const text = document.getElementById("shareLink").innerText;
+    navigator.clipboard.writeText(text).then(() => {
+        alert("Link copied to clipboard!");
+    });
+}
+</script>
+
+</body>
+</html>
