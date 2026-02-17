@@ -2,7 +2,6 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, s
 from flask_socketio import SocketIO, join_room
 import psycopg2
 import psycopg2.extras
-from psycopg.rows import dict_row
 import random
 import string
 import os
