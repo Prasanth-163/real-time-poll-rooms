@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session
 from flask_socketio import SocketIO, join_room
-import psycopg
+import psycopg2
+import psycopg2.extras
 from psycopg.rows import dict_row
 import random
 import string
@@ -19,7 +20,7 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # ---------------- DATABASE CONNECTION ----------------
 def get_db_connection():
-    return psycopg.connect(Config.DATABASE_URL)
+    return psycopg2.connect(app.config["DATABASE_URL"])
 
 
 def create_tables():
