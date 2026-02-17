@@ -6,16 +6,20 @@ import random
 import string
 from config import Config
 
+
+# ---------------- APP INIT ----------------
 app = Flask(__name__)
 app.config.from_object(Config)
-
-socketio = SocketIO(app)
 app.secret_key = Config.SECRET_KEY
+
+# Important for Render + WebSockets
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 
 # ---------------- DATABASE CONNECTION ----------------
 def get_db_connection():
     return psycopg2.connect(Config.DATABASE_URL)
+
 
 def create_tables():
     conn = get_db_connection()
@@ -52,6 +56,11 @@ def create_tables():
     conn.close()
 
 
+# ✅ This ensures tables are created even when running with gunicorn (Render)
+with app.app_context():
+    create_tables()
+
+
 # ---------------- GENERATE UNIQUE POLL ID ----------------
 def generate_poll_id(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -75,7 +84,6 @@ def create_poll():
         request.form.get("option4"),
     ]
 
-    # Remove empty options
     options = [opt for opt in options if opt and opt.strip() != ""]
 
     if not question or len(options) < 2:
@@ -100,7 +108,7 @@ def create_poll():
 
         conn.commit()
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
         cursor.close()
         conn.close()
@@ -113,14 +121,11 @@ def create_poll():
     return render_template("poll_created.html", share_url=share_url)
 
 
-
-
 # ---------------- VIEW POLL ----------------
 @app.route("/poll/<poll_id>")
 def view_poll(poll_id):
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
 
     cursor.execute("SELECT * FROM polls WHERE id = %s", (poll_id,))
     poll = cursor.fetchone()
@@ -153,34 +158,30 @@ def vote(poll_id):
         session["voted_polls"] = []
 
     if poll_id in session["voted_polls"]:
-        return jsonify({"success": False, "message": "You already voted (session)."})
+        return jsonify({"success": False, "message": "You already voted (session restriction)."})
 
     ip_address = request.remote_addr
 
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-
     # -------- IP-Based Fairness --------
     cursor.execute(
-        "SELECT * FROM votes WHERE poll_id = %s AND ip_address = %s",
+        "SELECT 1 FROM votes WHERE poll_id = %s AND ip_address = %s",
         (poll_id, ip_address)
     )
-    existing_vote = cursor.fetchone()
 
-    if existing_vote:
+    if cursor.fetchone():
         cursor.close()
         conn.close()
-        return jsonify({"success": False, "message": "You have already voted (IP restriction)."})
+        return jsonify({"success": False, "message": "You already voted (IP restriction)."})
 
     try:
-        # Insert vote tracking
         cursor.execute(
             "INSERT INTO votes (poll_id, ip_address) VALUES (%s, %s)",
             (poll_id, ip_address)
         )
 
-        # Increment vote count
         cursor.execute(
             "UPDATE options SET vote_count = vote_count + 1 WHERE id = %s",
             (option_id,)
@@ -188,21 +189,18 @@ def vote(poll_id):
 
         conn.commit()
 
-        # Add to session restriction
         session["voted_polls"].append(poll_id)
         session.modified = True
 
-        # Fetch updated results
         cursor.execute(
             "SELECT id, vote_count FROM options WHERE poll_id = %s",
             (poll_id,)
         )
         updated_results = cursor.fetchall()
 
-        # Emit real-time update
         socketio.emit("update_results", updated_results, room=poll_id)
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
         cursor.close()
         conn.close()
@@ -221,8 +219,6 @@ def handle_join(data):
     join_room(poll_id)
 
 
-# ---------------- RUN APP ----------------
+# ---------------- RUN APP (LOCAL ONLY) ----------------
 if __name__ == "__main__":
-    create_tables()
     socketio.run(app, debug=True)
-
