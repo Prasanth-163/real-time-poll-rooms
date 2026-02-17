@@ -18,9 +18,9 @@ app.secret_key = Config.SECRET_KEY
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
-# ---------------- DATABASE CONNECTION ----------------
 def get_db_connection():
     return psycopg2.connect(app.config["DATABASE_URL"])
+
 
 
 def create_tables():
