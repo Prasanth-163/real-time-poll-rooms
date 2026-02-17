@@ -1,9 +1,10 @@
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session
 from flask_socketio import SocketIO, join_room
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 import random
 import string
+import os
 from config import Config
 
 
@@ -12,56 +13,47 @@ app = Flask(__name__)
 app.config.from_object(Config)
 app.secret_key = Config.SECRET_KEY
 
-# Important for Render + WebSockets
-socketio = SocketIO(app, cors_allowed_origins="*")
+# IMPORTANT for production (no eventlet)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
 # ---------------- DATABASE CONNECTION ----------------
 def get_db_connection():
-    return psycopg2.connect(Config.DATABASE_URL)
+    return psycopg.connect(Config.DATABASE_URL)
 
 
 def create_tables():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        with conn.cursor() as cursor:
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS polls (
-            id VARCHAR(10) PRIMARY KEY,
-            question TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS polls (
+                    id VARCHAR(10) PRIMARY KEY,
+                    question TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS options (
-            id SERIAL PRIMARY KEY,
-            poll_id VARCHAR(10) REFERENCES polls(id) ON DELETE CASCADE,
-            option_text TEXT NOT NULL,
-            vote_count INTEGER DEFAULT 0
-        );
-    """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS options (
+                    id SERIAL PRIMARY KEY,
+                    poll_id VARCHAR(10) REFERENCES polls(id) ON DELETE CASCADE,
+                    option_text TEXT NOT NULL,
+                    vote_count INTEGER DEFAULT 0
+                );
+            """)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS votes (
-            id SERIAL PRIMARY KEY,
-            poll_id VARCHAR(10),
-            ip_address VARCHAR(50),
-            UNIQUE (poll_id, ip_address)
-        );
-    """)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS votes (
+                    id SERIAL PRIMARY KEY,
+                    poll_id VARCHAR(10),
+                    ip_address VARCHAR(50),
+                    UNIQUE (poll_id, ip_address)
+                );
+            """)
 
 
-# ✅ This ensures tables are created even when running with gunicorn (Render)
-with app.app_context():
-    create_tables()
-
-
-# ---------------- GENERATE UNIQUE POLL ID ----------------
+# ---------------- GENERATE POLL ID ----------------
 def generate_poll_id(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
@@ -91,31 +83,23 @@ def create_poll():
 
     poll_id = generate_poll_id()
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
     try:
-        cursor.execute(
-            "INSERT INTO polls (id, question) VALUES (%s, %s)",
-            (poll_id, question)
-        )
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
 
-        for opt in options:
-            cursor.execute(
-                "INSERT INTO options (poll_id, option_text) VALUES (%s, %s)",
-                (poll_id, opt)
-            )
+                cursor.execute(
+                    "INSERT INTO polls (id, question) VALUES (%s, %s)",
+                    (poll_id, question)
+                )
 
-        conn.commit()
+                for opt in options:
+                    cursor.execute(
+                        "INSERT INTO options (poll_id, option_text) VALUES (%s, %s)",
+                        (poll_id, opt)
+                    )
 
     except Exception:
-        conn.rollback()
-        cursor.close()
-        conn.close()
         return "Error creating poll."
-
-    cursor.close()
-    conn.close()
 
     share_url = url_for("view_poll", poll_id=poll_id, _external=True)
     return render_template("poll_created.html", share_url=share_url)
@@ -124,22 +108,18 @@ def create_poll():
 # ---------------- VIEW POLL ----------------
 @app.route("/poll/<poll_id>")
 def view_poll(poll_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    cursor.execute("SELECT * FROM polls WHERE id = %s", (poll_id,))
-    poll = cursor.fetchone()
+    with get_db_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cursor:
 
-    if not poll:
-        cursor.close()
-        conn.close()
-        return "Poll not found."
+            cursor.execute("SELECT * FROM polls WHERE id = %s", (poll_id,))
+            poll = cursor.fetchone()
 
-    cursor.execute("SELECT * FROM options WHERE poll_id = %s", (poll_id,))
-    options = cursor.fetchall()
+            if not poll:
+                return "Poll not found."
 
-    cursor.close()
-    conn.close()
+            cursor.execute("SELECT * FROM options WHERE poll_id = %s", (poll_id,))
+            options = cursor.fetchall()
 
     return render_template("poll_room.html", poll=poll, options=options)
 
@@ -147,69 +127,66 @@ def view_poll(poll_id):
 # ---------------- VOTE ----------------
 @app.route("/vote/<poll_id>", methods=["POST"])
 def vote(poll_id):
+
     data = request.get_json()
     option_id = data.get("option_id")
 
     if not option_id:
         return jsonify({"success": False, "message": "Invalid vote."})
 
-    # -------- Session-Based Fairness --------
+    # -------- Session Restriction --------
     if "voted_polls" not in session:
         session["voted_polls"] = []
 
     if poll_id in session["voted_polls"]:
-        return jsonify({"success": False, "message": "You already voted (session restriction)."})
+        return jsonify({"success": False, "message": "You already voted (session)."})
 
     ip_address = request.remote_addr
 
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    # -------- IP-Based Fairness --------
-    cursor.execute(
-        "SELECT 1 FROM votes WHERE poll_id = %s AND ip_address = %s",
-        (poll_id, ip_address)
-    )
-
-    if cursor.fetchone():
-        cursor.close()
-        conn.close()
-        return jsonify({"success": False, "message": "You already voted (IP restriction)."})
-
     try:
-        cursor.execute(
-            "INSERT INTO votes (poll_id, ip_address) VALUES (%s, %s)",
-            (poll_id, ip_address)
-        )
+        with get_db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cursor:
 
-        cursor.execute(
-            "UPDATE options SET vote_count = vote_count + 1 WHERE id = %s",
-            (option_id,)
-        )
+                # IP restriction
+                cursor.execute(
+                    "SELECT * FROM votes WHERE poll_id = %s AND ip_address = %s",
+                    (poll_id, ip_address)
+                )
+                existing_vote = cursor.fetchone()
 
-        conn.commit()
+                if existing_vote:
+                    return jsonify({"success": False, "message": "You already voted (IP restriction)."})
 
+                # Insert vote record
+                cursor.execute(
+                    "INSERT INTO votes (poll_id, ip_address) VALUES (%s, %s)",
+                    (poll_id, ip_address)
+                )
+
+                # Increment vote count
+                cursor.execute(
+                    "UPDATE options SET vote_count = vote_count + 1 WHERE id = %s",
+                    (option_id,)
+                )
+
+                # Fetch updated results
+                cursor.execute(
+                    "SELECT id, vote_count FROM options WHERE poll_id = %s",
+                    (poll_id,)
+                )
+                updated_results = cursor.fetchall()
+
+        # Update session
         session["voted_polls"].append(poll_id)
         session.modified = True
 
-        cursor.execute(
-            "SELECT id, vote_count FROM options WHERE poll_id = %s",
-            (poll_id,)
-        )
-        updated_results = cursor.fetchall()
-
+        # Emit real-time update
         socketio.emit("update_results", updated_results, room=poll_id)
 
+        return jsonify({"success": True})
+
     except Exception:
-        conn.rollback()
-        cursor.close()
-        conn.close()
         return jsonify({"success": False, "message": "Vote failed."})
-
-    cursor.close()
-    conn.close()
-
-    return jsonify({"success": True})
 
 
 # ---------------- SOCKET JOIN ----------------
@@ -219,6 +196,9 @@ def handle_join(data):
     join_room(poll_id)
 
 
-# ---------------- RUN APP (LOCAL ONLY) ----------------
+# ---------------- START APP ----------------
 if __name__ == "__main__":
-    socketio.run(app, debug=True)
+    if os.environ.get("RENDER") is None:
+        # Only run table creation locally
+        create_tables()
+        socketio.run(app, debug=True)
